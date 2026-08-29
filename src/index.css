@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .fixed.inset-0.z-50 {
+    display: flex !important;
+  }
+  .fixed.inset-0.z-50 * {
+    visibility: visible;
+  }
+  .fixed.inset-0.z-50 > div:last-child > div:first-child {
+    position: static !important;
+    border: none !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+  }
+}
