@@ -11,28 +11,52 @@ import {
   Loader2,
   CheckCircle2,
   FileText,
+  History,
+  Eye,
+  ShieldAlert,
 } from 'lucide-react';
 import { supabase, type Inspection, type InspectionItem } from '@/lib/supabase';
 import { ENGINE_ROOM_ITEMS } from '@/lib/checklistData';
+import { useApp, ROLES, generateGps } from '@/lib/appState';
 import PostInspectionFeedback from '@/components/PostInspectionFeedback';
+import DefectTicketModal from '@/components/DefectTicketModal';
+import AuditTrailLog from '@/components/AuditTrailLog';
 
 type Response = 'pass' | 'fail' | 'na';
 
 type Props = { onBack: () => void };
 
+type DefectRef = {
+  defectId: string;
+  title: string;
+  severity: 'low' | 'medium' | 'critical';
+  assignedOfficer: string;
+  photoLabel: string | null;
+};
+
 export default function InspectionForm({ onBack }: Props) {
+  const { role, addDefect, addAuditEntry, auditLog, incrementPendingSync } = useApp();
+  const roleCfg = ROLES[role];
+  const isReadOnly = role === 'dpa';
+  const canSign = roleCfg.canSign;
+
   const [inspection, setInspection] = useState<Inspection | null>(null);
   const [items, setItems] = useState<InspectionItem[]>([]);
   const [responses, setResponses] = useState<Record<string, Response>>({});
   const [photos, setPhotos] = useState<Record<string, boolean>>({});
+  const [defectRefs, setDefectRefs] = useState<Record<string, DefectRef>>({});
   const [elapsed, setElapsed] = useState(0);
   const [signed, setSigned] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(true);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [defectModalItem, setDefectModalItem] = useState<{ itemId: string; question: string } | null>(null);
+  const [auditLogOpen, setAuditLogOpen] = useState(false);
   const [shipId, setShipId] = useState<string | null>(null);
   const timerRef = useRef<number | null>(null);
+
+  const gpsString = "37°27'N 24°56'E";
 
   const loadOrCreate = useCallback(async () => {
     const { data: ship } = await supabase.from('ships').select('id').eq('imo', '9876543').maybeSingle();
@@ -98,12 +122,10 @@ export default function InspectionForm({ onBack }: Props) {
     setLoading(false);
   }, []);
 
-  useEffect(() => {
-    loadOrCreate();
-  }, [loadOrCreate]);
+  useEffect(() => { loadOrCreate(); }, [loadOrCreate]);
 
   useEffect(() => {
-    if (submitted) return;
+    if (submitted || isReadOnly) return;
     timerRef.current = window.setInterval(() => {
       setElapsed((e) => {
         const next = e + 1;
@@ -114,36 +136,127 @@ export default function InspectionForm({ onBack }: Props) {
       });
     }, 1000);
     return () => { if (timerRef.current) window.clearInterval(timerRef.current); };
-  }, [submitted, inspection]);
+  }, [submitted, isReadOnly, inspection]);
 
-  const setResponse = async (itemId: string, res: Response) => {
-    if (submitted) return;
+  const setResponse = async (itemId: string, res: Response, question: string) => {
+    if (submitted || isReadOnly) return;
+
+    if (res === 'fail') {
+      setDefectModalItem({ itemId, question });
+      return;
+    }
+
     setResponses((p) => ({ ...p, [itemId]: res }));
+    setDefectRefs((p) => {
+      const next = { ...p };
+      delete next[itemId];
+      return next;
+    });
     await supabase.from('inspection_items').update({ response: res, updated_at: new Date().toISOString() }).eq('id', itemId);
+    addAuditEntry({
+      inspection_id: inspection?.id ?? null,
+      ship_id: shipId,
+      action: `Item marked ${res.toUpperCase()} by ${roleCfg.userName}`,
+      action_type: res,
+      user_name: roleCfg.userName,
+      user_role: role,
+      gps_coordinates: gpsString,
+      item_key: null,
+      item_question: question,
+    });
   };
 
-  const takePhoto = async (itemId: string) => {
-    if (submitted) return;
-    setPhotos((p) => ({ ...p, [itemId]: true }));
-    await supabase
-      .from('inspection_items')
-      .update({ has_photo: true, photo_label: `defect_${String(Math.floor(Math.random() * 9000) + 1000)}.jpg (188 KB)`, updated_at: new Date().toISOString() })
-      .eq('id', itemId);
+  const handleDefectConfirm = async (data: {
+    title: string;
+    severity: 'low' | 'medium' | 'critical';
+    assignedOfficer: string;
+    targetDate: string;
+    hasPhoto: boolean;
+    photoOriginalSize: string;
+    photoCompressedSize: string;
+    photoLabel: string;
+  }) => {
+    if (!defectModalItem) return;
+    const itemId = defectModalItem.itemId;
+    setResponses((p) => ({ ...p, [itemId]: 'fail' }));
+    setPhotos((p) => ({ ...p, [itemId]: data.hasPhoto }));
+
+    const newDefect = addDefect({
+      ship_id: shipId ?? '',
+      ship_name: 'M/V AEGEAN GLORY',
+      inspection_id: inspection?.id ?? null,
+      inspection_item_id: itemId,
+      title: data.title,
+      severity: data.severity,
+      assigned_officer: data.assignedOfficer,
+      target_resolution_date: data.targetDate,
+      status: 'open',
+      photo_label: data.photoLabel,
+      photo_compressed_size: data.photoCompressedSize,
+      photo_original_size: data.photoOriginalSize,
+      created_by_role: role,
+      created_by_name: roleCfg.userName,
+      gps_coordinates: gpsString,
+      checklist_ref: 'Engine Room Daily Inspection',
+    });
+
+    setDefectRefs((p) => ({
+      ...p,
+      [itemId]: {
+        defectId: newDefect.id,
+        title: data.title,
+        severity: data.severity,
+        assignedOfficer: data.assignedOfficer,
+        photoLabel: data.photoLabel,
+      },
+    }));
+
+    await supabase.from('inspection_items').update({
+      response: 'fail',
+      has_photo: data.hasPhoto,
+      photo_label: data.photoLabel ?? `defect_${Math.floor(Math.random() * 9000) + 1000}.jpg`,
+      updated_at: new Date().toISOString(),
+    }).eq('id', itemId);
+
+    addAuditEntry({
+      inspection_id: inspection?.id ?? null,
+      ship_id: shipId,
+      action: `FAIL — Defect ticket created: "${data.title}" (${data.severity}) by ${roleCfg.userName}`,
+      action_type: 'defect_created',
+      user_name: roleCfg.userName,
+      user_role: role,
+      gps_coordinates: gpsString,
+      item_key: null,
+      item_question: defectModalItem.question,
+    });
+
+    setDefectModalItem(null);
   };
 
   const sign = async () => {
-    if (submitted) return;
+    if (submitted || !canSign) return;
     setSigned(true);
     if (inspection) {
       await supabase
         .from('inspections')
-        .update({ signature_confirmed: true, signed_by: 'Ch. Eng. A. Nikolaou' })
+        .update({ signature_confirmed: true, signed_by: roleCfg.userName })
         .eq('id', inspection.id);
+      addAuditEntry({
+        inspection_id: inspection.id,
+        ship_id: shipId,
+        action: `Record signed by ${roleCfg.userName} (${roleCfg.label})`,
+        action_type: 'sign',
+        user_name: roleCfg.userName,
+        user_role: role,
+        gps_coordinates: gpsString,
+        item_key: null,
+        item_question: null,
+      });
     }
   };
 
   const submit = async () => {
-    if (submitted || !inspection || !signed) return;
+    if (submitted || !inspection || !signed || !canSign) return;
     setSubmitting(true);
     await supabase
       .from('inspections')
@@ -151,12 +264,25 @@ export default function InspectionForm({ onBack }: Props) {
       .eq('id', inspection.id);
     setSubmitted(true);
     setSubmitting(false);
+    incrementPendingSync();
+    addAuditEntry({
+      inspection_id: inspection.id,
+      ship_id: shipId,
+      action: `Record LOCKED & submitted by ${roleCfg.userName} — Cryptographically sealed`,
+      action_type: 'lock',
+      user_name: roleCfg.userName,
+      user_role: role,
+      gps_coordinates: gpsString,
+      item_key: null,
+      item_question: null,
+    });
   };
 
   const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 
   const allAnswered = items.length > 0 && items.every((it) => responses[it.id]);
-  const anyFail = items.some((it) => responses[it.id] === 'fail' && !photos[it.id]);
+  const allFailsHaveDefects = items.every((it) => responses[it.id] !== 'fail' || defectRefs[it.id]);
+  const relatedAuditEntries = auditLog.filter((e) => e.inspection_id === inspection?.id);
 
   if (loading) {
     return (
@@ -168,7 +294,6 @@ export default function InspectionForm({ onBack }: Props) {
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-5 pb-32">
-      {/* Top Bar */}
       <header className="flex items-center gap-3 rounded-2xl border border-slate-700 bg-slate-900/80 p-4 shadow-lg">
         <button onClick={onBack} className="rounded-lg p-2 text-slate-300 hover:bg-slate-800">
           <ArrowLeft className="h-5 w-5" />
@@ -185,9 +310,28 @@ export default function InspectionForm({ onBack }: Props) {
             </span>
           </div>
         </div>
+        <button
+          onClick={() => setAuditLogOpen(true)}
+          className="inline-flex items-center gap-1 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-xs font-bold text-slate-300 transition hover:bg-slate-700"
+        >
+          <History className="h-3.5 w-3.5" /> Log ({relatedAuditEntries.length})
+        </button>
       </header>
 
-      {/* Geographic Context */}
+      {isReadOnly && (
+        <div className="mt-4 flex items-center gap-2 rounded-xl border border-blue-500/40 bg-blue-500/10 px-4 py-3">
+          <Eye className="h-5 w-5 text-blue-400" />
+          <p className="text-sm font-bold text-blue-300">Read-Only Access — DPA view. Cannot edit or sign records.</p>
+        </div>
+      )}
+
+      {role === 'junior_officer' && !submitted && (
+        <div className="mt-4 flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
+          <ShieldAlert className="h-5 w-5 text-amber-400" />
+          <p className="text-sm font-bold text-amber-300">Junior Officer mode — Draft/Pending Review. Signing requires Captain / Chief Engineer.</p>
+        </div>
+      )}
+
       <div className="mt-4 flex items-start gap-3 rounded-xl border border-amber-500/50 bg-amber-500/10 px-4 py-3">
         <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-400" />
         <p className="text-sm font-semibold text-amber-200">
@@ -195,11 +339,10 @@ export default function InspectionForm({ onBack }: Props) {
         </p>
       </div>
 
-      {/* Checklist Items */}
       <section className="mt-5 space-y-4">
         {items.map((item, idx) => {
           const res = responses[item.id];
-          const hasPhoto = photos[item.id];
+          const dr = defectRefs[item.id];
           return (
             <div key={item.id} className="rounded-2xl border border-slate-700 bg-slate-900/70 p-4 shadow">
               <div className="mb-3 flex items-start gap-2">
@@ -209,32 +352,31 @@ export default function InspectionForm({ onBack }: Props) {
                 <p className="text-sm font-semibold text-slate-100">{item.question}</p>
               </div>
               <div className="grid grid-cols-3 gap-2">
-                <ToggleButton active={res === 'pass'} tone="green" label="PASS" onClick={() => setResponse(item.id, 'pass')} disabled={submitted} />
-                <ToggleButton active={res === 'fail'} tone="red" label="FAIL" onClick={() => setResponse(item.id, 'fail')} disabled={submitted} />
-                <ToggleButton active={res === 'na'} tone="slate" label="N/A" onClick={() => setResponse(item.id, 'na')} disabled={submitted} />
+                <ToggleButton active={res === 'pass'} tone="green" label="PASS" onClick={() => setResponse(item.id, 'pass', item.question)} disabled={submitted || isReadOnly} />
+                <ToggleButton active={res === 'fail'} tone="red" label="FAIL" onClick={() => setResponse(item.id, 'fail', item.question)} disabled={submitted || isReadOnly} />
+                <ToggleButton active={res === 'na'} tone="slate" label="N/A" onClick={() => setResponse(item.id, 'na', item.question)} disabled={submitted || isReadOnly} />
               </div>
 
-              {res === 'fail' && (
-                <div className="mt-3">
-                  <button
-                    onClick={() => takePhoto(item.id)}
-                    disabled={submitted}
-                    className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-600 bg-slate-800 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:bg-slate-700 disabled:opacity-50"
-                  >
-                    <Camera className="h-5 w-5" />
-                    {hasPhoto ? 'Retake Defect Photo (Auto-Compress to 200KB)' : 'Take Defect Photo (Auto-Compress to 200KB)'}
-                  </button>
-                  {hasPhoto && (
-                    <div className="mt-2 flex items-center gap-3 rounded-lg border border-slate-700 bg-slate-950/50 p-2">
-                      <div className="flex h-16 w-16 items-center justify-center rounded bg-slate-800 text-slate-500">
-                        <Camera className="h-6 w-6" />
-                      </div>
-                      <div className="text-xs">
-                        <p className="font-semibold text-slate-300">{item.photo_label ?? 'defect_photo.jpg (188 KB)'}</p>
-                        <p className="text-slate-500">Compressed · attached to record</p>
-                      </div>
+              {res === 'fail' && dr && (
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-center gap-2 rounded-xl border border-red-500/50 bg-red-500/10 px-4 py-3">
+                    <AlertTriangle className="h-5 w-5 shrink-0 text-red-400" />
+                    <p className="text-sm font-bold text-red-300">
+                      Defect Ticket Created — {dr.severity.toUpperCase()}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
+                    <p className="text-xs font-bold uppercase tracking-wider text-amber-400">Defect Details</p>
+                    <p className="mt-1 text-sm text-slate-200">{dr.title}</p>
+                    <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-400">
+                      <span>Assigned: {dr.assignedOfficer}</span>
+                      {dr.photoLabel && (
+                        <span className="flex items-center gap-1 text-emerald-400">
+                          <Camera className="h-3.5 w-3.5" /> {dr.photoLabel}
+                        </span>
+                      )}
                     </div>
-                  )}
+                  </div>
                 </div>
               )}
             </div>
@@ -242,59 +384,47 @@ export default function InspectionForm({ onBack }: Props) {
         })}
       </section>
 
-      {/* Signature Area */}
-      <section className="mt-6 rounded-2xl border border-slate-700 bg-slate-900/70 p-4 shadow">
-        <h2 className="mb-3 text-sm font-bold uppercase tracking-wider text-slate-400">Digital Signature</h2>
-        <button
-          onClick={sign}
-          disabled={submitted || signed}
-          className={`flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-6 text-sm font-semibold transition ${
-            signed
-              ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
-              : 'border-slate-600 bg-slate-950/40 text-slate-400 hover:border-slate-500 hover:text-slate-300'
-          } disabled:cursor-not-allowed`}
-        >
-          {signed ? (
-            <>
-              <CheckCircle2 className="h-5 w-5" />
-              Signed: Ch. Eng. A. Nikolaou
-            </>
-          ) : (
-            <>
-              <PenLine className="h-5 w-5" />
-              Tap to Sign: Ch. Eng. A. Nikolaou
-            </>
-          )}
-        </button>
+      {/* Signature Area — only for non-DPA roles */}
+      {!isReadOnly && (
+        <section className="mt-6 rounded-2xl border border-slate-700 bg-slate-900/70 p-4 shadow">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400">Digital Signature</h2>
+            {!canSign && (
+              <span className="rounded-full bg-amber-500/15 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-amber-400 ring-1 ring-amber-500/30">
+                Signing requires Captain / C/E
+              </span>
+            )}
+          </div>
+          <button
+            onClick={sign}
+            disabled={submitted || signed || !canSign}
+            className={`flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-6 text-sm font-semibold transition disabled:cursor-not-allowed ${
+              signed ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300' : 'border-slate-600 bg-slate-950/40 text-slate-400 hover:border-slate-500 hover:text-slate-300'
+            }`}
+          >
+            {signed ? <><CheckCircle2 className="h-5 w-5" /> Signed: {roleCfg.userName}</> : <><PenLine className="h-5 w-5" /> Tap to Sign: {roleCfg.userName}</>}
+          </button>
 
-        <button
-          onClick={submit}
-          disabled={!allAnswered || !signed || anyFail || submitting || submitted}
-          className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-4 text-base font-bold text-white shadow-lg shadow-emerald-600/30 transition hover:bg-emerald-500 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 disabled:shadow-none"
-        >
-          {submitted ? (
-            <>
-              <Lock className="h-5 w-5" /> Record Locked
-            </>
-          ) : submitting ? (
-            <>
-              <Loader2 className="h-5 w-5 animate-spin" /> Submitting…
-            </>
-          ) : (
-            <>
-              <Check className="h-5 w-5" /> Submit &amp; Lock Record
-            </>
+          {canSign && (
+            <button
+              onClick={submit}
+              disabled={!allAnswered || !allFailsHaveDefects || !signed || submitting || submitted}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-4 text-base font-bold text-white shadow-lg shadow-emerald-600/30 transition hover:bg-emerald-500 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 disabled:shadow-none"
+            >
+              {submitted ? <><Lock className="h-5 w-5" /> Record Locked</>
+                : submitting ? <><Loader2 className="h-5 w-5 animate-spin" /> Submitting…</>
+                : <><Check className="h-5 w-5" /> Submit & Lock Record</>}
+            </button>
           )}
-        </button>
-        {!allAnswered && !submitted && (
-          <p className="mt-2 text-center text-xs text-amber-400">Answer all items and sign before submitting.</p>
-        )}
-        {anyFail && !submitted && (
-          <p className="mt-2 text-center text-xs text-amber-400">Attach a defect photo for every FAIL item.</p>
-        )}
-      </section>
+          {!allAnswered && !submitted && (
+            <p className="mt-2 text-center text-xs text-amber-400">Answer all items and sign before submitting.</p>
+          )}
+          {!allFailsHaveDefects && !submitted && (
+            <p className="mt-2 text-center text-xs text-amber-400">Create defect tickets for all FAIL items.</p>
+          )}
+        </section>
+      )}
 
-      {/* Post-Inspection Feedback Button — appears after submission */}
       {submitted && (
         <section className="mt-5 rounded-2xl border border-cyan-500/40 bg-cyan-500/5 p-4 shadow-lg">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -314,6 +444,20 @@ export default function InspectionForm({ onBack }: Props) {
       )}
 
       <PostInspectionFeedback open={feedbackOpen} onClose={() => setFeedbackOpen(false)} shipId={shipId} />
+      <DefectTicketModal
+        open={defectModalItem !== null}
+        itemName={defectModalItem?.question ?? ''}
+        checklistRef="Engine Room Daily Inspection"
+        onClose={() => setDefectModalItem(null)}
+        onConfirm={handleDefectConfirm}
+      />
+      <AuditTrailLog
+        open={auditLogOpen}
+        onClose={() => setAuditLogOpen(false)}
+        entries={relatedAuditEntries}
+        isLocked={submitted}
+        checklistTitle="Engine Room Daily Inspection"
+      />
     </div>
   );
 }

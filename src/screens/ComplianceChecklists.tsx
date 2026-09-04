@@ -13,12 +13,16 @@ import {
   Clock,
   Hash,
   Award,
+  History,
+  Eye,
+  ShieldAlert,
 } from 'lucide-react';
 import { supabase, type Inspection, type InspectionItem } from '@/lib/supabase';
 import { OFFICIAL_CHECKLISTS, type OfficialChecklist } from '@/lib/checklistData';
-import { useApp } from '@/lib/appState';
-import CorrectiveActionModal from '@/components/CorrectiveActionModal';
+import { useApp, ROLES, generateGps } from '@/lib/appState';
+import DefectTicketModal from '@/components/DefectTicketModal';
 import AuditPdfPreview from '@/components/AuditPdfPreview';
+import AuditTrailLog from '@/components/AuditTrailLog';
 import SignaturePad from '@/components/SignaturePad';
 
 type Response = 'pass' | 'fail' | 'na';
@@ -31,19 +35,24 @@ const ACCENT: Record<string, { ring: string; text: string; bg: string; border: s
 
 const RANKS = ['Master', 'Chief Officer', '2nd Officer', '3rd Officer', 'Chief Engineer', '2nd Engineer', 'Bosun'];
 
-type CorrectiveAction = {
-  action: string;
-  hasPhoto: boolean;
+type DefectRef = {
+  defectId: string;
+  title: string;
+  severity: 'low' | 'medium' | 'critical';
+  assignedOfficer: string;
+  photoLabel: string | null;
 };
 
 export default function ComplianceChecklists() {
-  const { incrementPendingSync } = useApp();
+  const { role, addDefect, addAuditEntry, auditLog, incrementPendingSync } = useApp();
+  const roleCfg = ROLES[role];
+  const isReadOnly = role === 'dpa';
+  const canSign = roleCfg.canSign;
 
   const [activeIdx, setActiveIdx] = useState(0);
   const checklist = OFFICIAL_CHECKLISTS[activeIdx];
   const accent = ACCENT[checklist.accent];
 
-  // STCW/ISM compulsory fields
   const [imoNumber, setImoNumber] = useState('9876543');
   const [watchOfficer, setWatchOfficer] = useState('');
   const [officerRank, setOfficerRank] = useState('Chief Officer');
@@ -55,17 +64,18 @@ export default function ComplianceChecklists() {
   const [items, setItems] = useState<InspectionItem[]>([]);
   const [responses, setResponses] = useState<Record<string, Response>>({});
   const [photos, setPhotos] = useState<Record<string, boolean>>({});
-  const [correctiveActions, setCorrectiveActions] = useState<Record<string, CorrectiveAction>>({});
+  const [defectRefs, setDefectRefs] = useState<Record<string, DefectRef>>({});
   const [signerName, setSignerName] = useState('');
   const [hasSignature, setHasSignature] = useState(false);
   const [signed, setSigned] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [shipId, setShipId] = useState<string | null>(null);
 
-  // Modal state
-  const [correctiveModalItem, setCorrectiveModalItem] = useState<{ itemId: string; question: string } | null>(null);
+  const [defectModalItem, setDefectModalItem] = useState<{ itemId: string; question: string } | null>(null);
   const [pdfOpen, setPdfOpen] = useState(false);
+  const [auditLogOpen, setAuditLogOpen] = useState(false);
 
   const loadChecklist = useCallback(async (cl: OfficialChecklist) => {
     setLoading(true);
@@ -73,7 +83,7 @@ export default function ComplianceChecklists() {
     setItems([]);
     setResponses({});
     setPhotos({});
-    setCorrectiveActions({});
+    setDefectRefs({});
     setSigned(false);
     setSubmitted(false);
     setSignerName('');
@@ -82,6 +92,7 @@ export default function ComplianceChecklists() {
     const { data: ship } = await supabase.from('ships').select('id,name,imo').eq('imo', '9876543').maybeSingle();
     if (!ship) { setLoading(false); return; }
     setImoNumber(ship.imo);
+    setShipId(ship.id);
 
     const { data: existing } = await supabase
       .from('inspections')
@@ -144,7 +155,6 @@ export default function ComplianceChecklists() {
 
   useEffect(() => { loadChecklist(checklist); }, [checklist, loadChecklist]);
 
-  // Update timestamp every minute
   useEffect(() => {
     const update = () => setTimestamp(new Date().toISOString());
     update();
@@ -152,53 +162,125 @@ export default function ComplianceChecklists() {
     return () => clearInterval(interval);
   }, []);
 
-  const setResponse = async (item: InspectionItem, res: Response) => {
-    if (submitted) return;
+  const gpsString = `${gpsLat}°N, ${gpsLon}°E`;
 
-    // If FAIL, open corrective action modal
+  const setResponse = async (item: InspectionItem, res: Response) => {
+    if (submitted || isReadOnly) return;
+
     if (res === 'fail') {
-      setCorrectiveModalItem({ itemId: item.id, question: item.question });
-      // Don't set the response yet — wait for modal confirmation
+      setDefectModalItem({ itemId: item.id, question: item.question });
       return;
     }
 
     setResponses((p) => ({ ...p, [item.id]: res }));
-    // Clear any corrective action if switching away from fail
-    setCorrectiveActions((p) => {
+    setDefectRefs((p) => {
       const next = { ...p };
       delete next[item.id];
       return next;
     });
     await supabase.from('inspection_items').update({ response: res, updated_at: new Date().toISOString() }).eq('id', item.id);
+    addAuditEntry({
+      inspection_id: inspection?.id ?? null,
+      ship_id: shipId,
+      action: `Item marked ${res.toUpperCase()} by ${roleCfg.userName}`,
+      action_type: res,
+      user_name: roleCfg.userName,
+      user_role: role,
+      gps_coordinates: gpsString,
+      item_key: null,
+      item_question: item.question,
+    });
   };
 
-  const handleCorrectiveConfirm = async (action: string, hasPhoto: boolean) => {
-    if (!correctiveModalItem) return;
-    const itemId = correctiveModalItem.itemId;
+  const handleDefectConfirm = async (data: {
+    title: string;
+    severity: 'low' | 'medium' | 'critical';
+    assignedOfficer: string;
+    targetDate: string;
+    hasPhoto: boolean;
+    photoOriginalSize: string;
+    photoCompressedSize: string;
+    photoLabel: string;
+  }) => {
+    if (!defectModalItem) return;
+    const itemId = defectModalItem.itemId;
     setResponses((p) => ({ ...p, [itemId]: 'fail' }));
-    setPhotos((p) => ({ ...p, [itemId]: hasPhoto }));
-    setCorrectiveActions((p) => ({ ...p, [itemId]: { action, hasPhoto } }));
+    setPhotos((p) => ({ ...p, [itemId]: data.hasPhoto }));
+
+    const newDefect = addDefect({
+      ship_id: shipId ?? '',
+      ship_name: 'M/V AEGEAN GLORY',
+      inspection_id: inspection?.id ?? null,
+      inspection_item_id: itemId,
+      title: data.title,
+      severity: data.severity,
+      assigned_officer: data.assignedOfficer,
+      target_resolution_date: data.targetDate,
+      status: 'open',
+      photo_label: data.photoLabel,
+      photo_compressed_size: data.photoCompressedSize,
+      photo_original_size: data.photoOriginalSize,
+      created_by_role: role,
+      created_by_name: roleCfg.userName,
+      gps_coordinates: gpsString,
+      checklist_ref: checklist.title,
+    });
+
+    setDefectRefs((p) => ({
+      ...p,
+      [itemId]: {
+        defectId: newDefect.id,
+        title: data.title,
+        severity: data.severity,
+        assignedOfficer: data.assignedOfficer,
+        photoLabel: data.photoLabel,
+      },
+    }));
+
     await supabase.from('inspection_items').update({
       response: 'fail',
-      has_photo: hasPhoto,
-      photo_label: `defect_${String(Math.floor(Math.random() * 9000) + 1000)}.jpg (188 KB)`,
+      has_photo: data.hasPhoto,
+      photo_label: data.photoLabel ?? `defect_${Math.floor(Math.random() * 9000) + 1000}.jpg`,
       updated_at: new Date().toISOString(),
     }).eq('id', itemId);
-    setCorrectiveModalItem(null);
+
+    addAuditEntry({
+      inspection_id: inspection?.id ?? null,
+      ship_id: shipId,
+      action: `FAIL — Defect ticket created: "${data.title}" (${data.severity}) by ${roleCfg.userName}`,
+      action_type: 'defect_created',
+      user_name: roleCfg.userName,
+      user_role: role,
+      gps_coordinates: gpsString,
+      item_key: null,
+      item_question: defectModalItem.question,
+    });
+
+    setDefectModalItem(null);
   };
 
   const sign = async () => {
-    if (submitted || !hasSignature || !inspection) return;
+    if (submitted || !hasSignature || !inspection || !canSign) return;
     setSigned(true);
     await supabase
       .from('inspections')
-      .update({ signature_confirmed: true, signed_by: 'Signed via Canvas' })
+      .update({ signature_confirmed: true, signed_by: roleCfg.userName })
       .eq('id', inspection.id);
+    addAuditEntry({
+      inspection_id: inspection.id,
+      ship_id: shipId,
+      action: `Record signed by ${roleCfg.userName} (${roleCfg.label})`,
+      action_type: 'sign',
+      user_name: roleCfg.userName,
+      user_role: role,
+      gps_coordinates: gpsString,
+      item_key: null,
+      item_question: null,
+    });
   };
 
   const submit = async () => {
-    if (submitted || !inspection || !signed || !hasSignature) return;
-    // Validate compulsory fields
+    if (submitted || !inspection || !signed || !hasSignature || !canSign) return;
     if (!imoNumber.trim() || !watchOfficer.trim() || !officerRank || !gpsLat.trim() || !gpsLon.trim()) return;
     setSubmitting(true);
     await supabase
@@ -208,16 +290,27 @@ export default function ComplianceChecklists() {
     setSubmitted(true);
     setSubmitting(false);
     incrementPendingSync();
+    addAuditEntry({
+      inspection_id: inspection.id,
+      ship_id: shipId,
+      action: `Record LOCKED & submitted by ${roleCfg.userName} — Cryptographically sealed`,
+      action_type: 'lock',
+      user_name: roleCfg.userName,
+      user_role: role,
+      gps_coordinates: gpsString,
+      item_key: null,
+      item_question: null,
+    });
   };
 
   const allAnswered = items.length > 0 && items.every((it) => responses[it.id]);
-  const allFailsHaveCorrective = items.every((it) => responses[it.id] !== 'fail' || (correctiveActions[it.id]?.action && correctiveActions[it.id]?.hasPhoto));
+  const allFailsHaveDefects = items.every((it) => responses[it.id] !== 'fail' || defectRefs[it.id]);
   const compulsoryFieldsFilled = imoNumber.trim() && watchOfficer.trim() && officerRank && gpsLat.trim() && gpsLon.trim();
   const passCount = items.filter((it) => responses[it.id] === 'pass').length;
   const failCount = items.filter((it) => responses[it.id] === 'fail').length;
   const naCount = items.filter((it) => responses[it.id] === 'na').length;
 
-  const gpsString = `${gpsLat}°N, ${gpsLon}°E`;
+  const relatedAuditEntries = auditLog.filter((e) => e.inspection_id === inspection?.id);
 
   const pdfData = {
     checklistTitle: checklist.title,
@@ -229,14 +322,35 @@ export default function ComplianceChecklists() {
     officerRank: officerRank,
     gps: gpsString,
     timestamp: timestamp || new Date().toISOString(),
-    items: items.map((it) => ({ question: it.question, response: responses[it.id] ?? '—' })),
-    signedBy: signed ? 'Signed via Canvas' : '',
+    items: items.map((it) => ({
+      question: it.question,
+      response: responses[it.id] ?? '—',
+      defect: defectRefs[it.id] ?? null,
+    })),
+    signedBy: signed ? roleCfg.userName : '',
     signedAt: submitted ? new Date().toISOString() : '',
+    isLocked: submitted,
+    defects: Object.values(defectRefs),
   };
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-5 pb-32 sm:px-6">
-      {/* Red Alert Banner */}
+      {/* Read-only banner for DPA */}
+      {isReadOnly && (
+        <div className="mb-4 flex items-center gap-2 rounded-xl border border-blue-500/40 bg-blue-500/10 px-4 py-3">
+          <Eye className="h-5 w-5 text-blue-400" />
+          <p className="text-sm font-bold text-blue-300">Read-Only Access — DPA / Fleet Manager view. You can review submitted audits but cannot edit, sign, or lock records.</p>
+        </div>
+      )}
+
+      {/* Junior Officer restriction banner */}
+      {role === 'junior_officer' && !submitted && (
+        <div className="mb-4 flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
+          <ShieldAlert className="h-5 w-5 text-amber-400" />
+          <p className="text-sm font-bold text-amber-300">Junior Officer mode — You can fill checklists and create defect tickets. Signing and locking requires Captain / Chief Engineer.</p>
+        </div>
+      )}
+
       <div className="overflow-hidden rounded-2xl border-2 border-red-500/70 bg-red-950/40 shadow-lg">
         <div className="flex items-center gap-2 bg-red-500/15 px-4 py-2.5">
           <AlertTriangle className="h-5 w-5 text-red-400" />
@@ -249,7 +363,6 @@ export default function ComplianceChecklists() {
         </p>
       </div>
 
-      {/* STCW / ISM Compulsory Fields */}
       {!loading && (
         <section className="mt-4 rounded-2xl border border-slate-700 bg-slate-900/80 p-5 shadow-xl">
           <div className="mb-3 flex items-center gap-2">
@@ -260,79 +373,43 @@ export default function ComplianceChecklists() {
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <Field icon={<Hash className="h-4 w-4" />} label="Vessel IMO Number">
-              <input
-                type="text"
-                value={imoNumber}
-                onChange={(e) => setImoNumber(e.target.value)}
-                disabled={submitted}
-                className="w-full rounded-lg border border-slate-600 bg-slate-950/50 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-blue-500 disabled:opacity-60"
-                placeholder="9876543"
-              />
+              <input type="text" value={imoNumber} onChange={(e) => setImoNumber(e.target.value)} disabled={submitted || isReadOnly}
+                className="w-full rounded-lg border border-slate-600 bg-slate-950/50 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-blue-500 disabled:opacity-60" placeholder="9876543" />
             </Field>
             <Field icon={<Award className="h-4 w-4" />} label="Watch Officer Rank">
-              <select
-                value={officerRank}
-                onChange={(e) => setOfficerRank(e.target.value)}
-                disabled={submitted}
-                className="w-full rounded-lg border border-slate-600 bg-slate-950/50 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-blue-500 disabled:opacity-60"
-              >
+              <select value={officerRank} onChange={(e) => setOfficerRank(e.target.value)} disabled={submitted || isReadOnly}
+                className="w-full rounded-lg border border-slate-600 bg-slate-950/50 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-blue-500 disabled:opacity-60">
                 {RANKS.map((r) => <option key={r} value={r}>{r}</option>)}
               </select>
             </Field>
             <Field icon={<PenLine className="h-4 w-4" />} label="Watch Officer Name">
-              <input
-                type="text"
-                value={watchOfficer}
-                onChange={(e) => setWatchOfficer(e.target.value)}
-                disabled={submitted}
-                className="w-full rounded-lg border border-slate-600 bg-slate-950/50 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-blue-500 disabled:opacity-60"
-                placeholder="Officer name"
-              />
+              <input type="text" value={watchOfficer} onChange={(e) => setWatchOfficer(e.target.value)} disabled={submitted || isReadOnly}
+                className="w-full rounded-lg border border-slate-600 bg-slate-950/50 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-blue-500 disabled:opacity-60" placeholder="Officer name" />
             </Field>
             <Field icon={<Navigation className="h-4 w-4" />} label="GPS Latitude">
-              <input
-                type="text"
-                value={gpsLat}
-                onChange={(e) => setGpsLat(e.target.value)}
-                disabled={submitted}
-                className="w-full rounded-lg border border-slate-600 bg-slate-950/50 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-blue-500 disabled:opacity-60"
-                placeholder="37.4475"
-              />
+              <input type="text" value={gpsLat} onChange={(e) => setGpsLat(e.target.value)} disabled={submitted || isReadOnly}
+                className="w-full rounded-lg border border-slate-600 bg-slate-950/50 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-blue-500 disabled:opacity-60" placeholder="37.4475" />
             </Field>
             <Field icon={<Navigation className="h-4 w-4" />} label="GPS Longitude">
-              <input
-                type="text"
-                value={gpsLon}
-                onChange={(e) => setGpsLon(e.target.value)}
-                disabled={submitted}
-                className="w-full rounded-lg border border-slate-600 bg-slate-950/50 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-blue-500 disabled:opacity-60"
-                placeholder="24.9420"
-              />
+              <input type="text" value={gpsLon} onChange={(e) => setGpsLon(e.target.value)} disabled={submitted || isReadOnly}
+                className="w-full rounded-lg border border-slate-600 bg-slate-950/50 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-blue-500 disabled:opacity-60" placeholder="24.9420" />
             </Field>
             <Field icon={<Clock className="h-4 w-4" />} label="Timestamp (ISO 8601)">
-              <input
-                type="text"
-                value={timestamp}
-                readOnly
-                className="w-full rounded-lg border border-slate-600 bg-slate-950/50 px-3 py-2.5 text-xs font-mono text-slate-300 outline-none"
-              />
+              <input type="text" value={timestamp} readOnly
+                className="w-full rounded-lg border border-slate-600 bg-slate-950/50 px-3 py-2.5 text-xs font-mono text-slate-300 outline-none" />
             </Field>
           </div>
         </section>
       )}
 
-      {/* Checklist Tab Navigation */}
       <nav className="mt-4 flex gap-2 overflow-x-auto pb-1">
         {OFFICIAL_CHECKLISTS.map((cl, i) => {
           const a = ACCENT[cl.accent];
           return (
-            <button
-              key={cl.id}
-              onClick={() => setActiveIdx(i)}
+            <button key={cl.id} onClick={() => setActiveIdx(i)}
               className={`flex min-h-[48px] shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition ${
                 i === activeIdx ? a.activeTab + ' shadow-lg' : 'border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
-              }`}
-            >
+              }`}>
               <FileCheck2 className="h-4 w-4" />
               {cl.title}
             </button>
@@ -340,14 +417,13 @@ export default function ComplianceChecklists() {
         })}
       </nav>
 
-      {/* Checklist Header */}
       <header className={`mt-4 rounded-2xl border ${accent.border} bg-slate-900/80 p-4 shadow-xl`}>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-lg font-bold text-white sm:text-xl">{checklist.title}</h1>
             <p className="text-sm text-slate-400">{checklist.authority} · {checklist.reference}</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <span className={`rounded-full ${accent.bg} ${accent.text} px-3 py-1.5 text-xs font-bold ring-1 ${accent.ring}`}>
               {items.length} Items
             </span>
@@ -356,18 +432,21 @@ export default function ComplianceChecklists() {
                 <Lock className="h-3.5 w-3.5" /> Locked
               </span>
             )}
+            <button
+              onClick={() => setAuditLogOpen(true)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-300 transition hover:bg-slate-700"
+            >
+              <History className="h-3.5 w-3.5" /> Audit Log ({relatedAuditEntries.length})
+            </button>
           </div>
         </div>
       </header>
 
-      {/* Progress Bar */}
       {!loading && items.length > 0 && (
         <div className="mt-3 flex items-center gap-3">
           <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-800">
-            <div
-              className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-300"
-              style={{ width: `${(passCount / items.length) * 100}%` }}
-            />
+            <div className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-300"
+              style={{ width: `${(passCount / items.length) * 100}%` }} />
           </div>
           <div className="flex gap-2 text-xs font-bold">
             <span className="text-emerald-400">{passCount} PASS</span>
@@ -377,19 +456,17 @@ export default function ComplianceChecklists() {
         </div>
       )}
 
-      {/* Loading */}
       {loading && (
         <div className="flex h-40 items-center justify-center text-slate-400">
           <Loader2 className="h-8 w-8 animate-spin" />
         </div>
       )}
 
-      {/* Checklist Items */}
       {!loading && (
         <section className="mt-4 space-y-4">
           {items.map((item, idx) => {
             const res = responses[item.id];
-            const ca = correctiveActions[item.id];
+            const dr = defectRefs[item.id];
             return (
               <div key={item.id} className="rounded-2xl border border-slate-700 bg-slate-900/70 p-4 shadow">
                 <div className="mb-3 flex items-start gap-2">
@@ -400,28 +477,30 @@ export default function ComplianceChecklists() {
                 </div>
                 <SegmentedPicker
                   value={res}
-                  disabled={submitted}
+                  disabled={submitted || isReadOnly}
                   onChange={(r) => setResponse(item, r)}
                 />
 
-                {res === 'fail' && (
+                {res === 'fail' && dr && (
                   <div className="mt-3 space-y-2">
                     <div className="flex items-center gap-2 rounded-xl border border-red-500/50 bg-red-500/10 px-4 py-3">
                       <AlertTriangle className="h-5 w-5 shrink-0 text-red-400" />
                       <p className="text-sm font-bold text-red-300">
-                        Defect Logged — Corrective Action Plan & Photo Required
+                        Defect Ticket Created — {dr.severity.toUpperCase()}
                       </p>
                     </div>
-                    {ca && (
-                      <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3">
-                        <p className="text-xs font-bold uppercase tracking-wider text-emerald-400">Corrective Action Plan</p>
-                        <p className="mt-1 text-sm text-slate-200">{ca.action}</p>
-                        <div className="mt-2 flex items-center gap-2 text-xs text-emerald-400">
-                          <Camera className="h-4 w-4" />
-                          Photo evidence attached (defect_{String(Math.floor(Math.random() * 9000) + 1000)}.jpg, 188 KB)
-                        </div>
+                    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
+                      <p className="text-xs font-bold uppercase tracking-wider text-amber-400">Defect Details</p>
+                      <p className="mt-1 text-sm text-slate-200">{dr.title}</p>
+                      <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-400">
+                        <span>Assigned: {dr.assignedOfficer}</span>
+                        {dr.photoLabel && (
+                          <span className="flex items-center gap-1 text-emerald-400">
+                            <Camera className="h-3.5 w-3.5" /> {dr.photoLabel}
+                          </span>
+                        )}
                       </div>
-                    )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -430,63 +509,52 @@ export default function ComplianceChecklists() {
         </section>
       )}
 
-      {/* Digital Signature Section */}
-      {!loading && (
+      {/* Digital Signature Section — only for Captain/Chief Engineer */}
+      {!loading && !isReadOnly && (
         <section className="mt-6 rounded-2xl border border-slate-700 bg-slate-900/70 p-4 shadow">
-          <h2 className="mb-3 text-sm font-bold uppercase tracking-wider text-slate-400">Digital Signature</h2>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400">Digital Signature</h2>
+            {!canSign && (
+              <span className="rounded-full bg-amber-500/15 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-amber-400 ring-1 ring-amber-500/30">
+                Signing requires Captain / C/E
+              </span>
+            )}
+          </div>
           <SignaturePad
-            disabled={submitted || signed}
+            disabled={submitted || signed || !canSign}
             saved={signed}
             onSave={setHasSignature}
           />
-          {!signed && (
+          {!signed && canSign && (
             <button
               onClick={sign}
               disabled={submitted || signed || !hasSignature}
               className={`mt-3 flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed px-5 py-3 text-sm font-bold transition disabled:cursor-not-allowed ${
-                signed
-                  ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
-                  : 'border-slate-600 bg-slate-950/40 text-slate-300 hover:border-slate-500'
+                signed ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300' : 'border-slate-600 bg-slate-950/40 text-slate-300 hover:border-slate-500'
               }`}
             >
-              {signed ? (
-                <>
-                  <Check className="h-5 w-5" /> Signed
-                </>
-              ) : (
-                <>
-                  <PenLine className="h-5 w-5" /> Confirm Signature
-                </>
-              )}
+              {signed ? <><Check className="h-5 w-5" /> Signed</> : <><PenLine className="h-5 w-5" /> Confirm Signature</>}
             </button>
           )}
 
-          <button
-            onClick={submit}
-            disabled={!allAnswered || !allFailsHaveCorrective || !signed || !compulsoryFieldsFilled || submitting || submitted}
-            className="mt-3 flex min-h-[52px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-4 text-base font-bold text-white shadow-lg shadow-emerald-600/30 transition hover:bg-emerald-500 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 disabled:shadow-none"
-          >
-            {submitted ? (
-              <>
-                <Lock className="h-5 w-5" /> Record Locked — Read Only
-              </>
-            ) : submitting ? (
-              <>
-                <Loader2 className="h-5 w-5 animate-spin" /> Submitting…
-              </>
-            ) : (
-              <>
-                <Check className="h-5 w-5" /> Submit &amp; Lock Record
-              </>
-            )}
-          </button>
-          {!allAnswered && !submitted && (
+          {canSign && (
+            <button
+              onClick={submit}
+              disabled={!allAnswered || !allFailsHaveDefects || !signed || !compulsoryFieldsFilled || submitting || submitted}
+              className="mt-3 flex min-h-[52px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-4 text-base font-bold text-white shadow-lg shadow-emerald-600/30 transition hover:bg-emerald-500 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 disabled:shadow-none"
+            >
+              {submitted ? <><Lock className="h-5 w-5" /> Record Locked — Read Only</>
+                : submitting ? <><Loader2 className="h-5 w-5 animate-spin" /> Submitting…</>
+                : <><Check className="h-5 w-5" /> Submit & Lock Record</>}
+            </button>
+          )}
+          {!allAnswered && !submitted && canSign && (
             <p className="mt-2 text-center text-xs text-amber-400">Answer all items and sign before submitting.</p>
           )}
-          {!allFailsHaveCorrective && !submitted && (
-            <p className="mt-2 text-center text-xs text-amber-400">Complete corrective action plans for all FAIL items.</p>
+          {!allFailsHaveDefects && !submitted && canSign && (
+            <p className="mt-2 text-center text-xs text-amber-400">Create defect tickets for all FAIL items.</p>
           )}
-          {!compulsoryFieldsFilled && !submitted && (
+          {!compulsoryFieldsFilled && !submitted && canSign && (
             <p className="mt-2 text-center text-xs text-amber-400">Fill in all compulsory STCW/ISM fields (IMO, Officer, GPS).</p>
           )}
         </section>
@@ -503,19 +571,36 @@ export default function ComplianceChecklists() {
             onClick={() => setPdfOpen(true)}
             className="flex min-h-[52px] w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-4 text-base font-bold text-white shadow-lg shadow-blue-600/30 transition hover:bg-blue-500 active:scale-[0.98]"
           >
-            <FileText className="h-5 w-5" /> Export Official Audit PDF
+            <FileText className="h-5 w-5" /> Export Official Inspection PDF
           </button>
         </div>
       )}
 
-      {/* Modals */}
-      <CorrectiveActionModal
-        open={correctiveModalItem !== null}
-        itemName={correctiveModalItem?.question ?? ''}
-        onClose={() => setCorrectiveModalItem(null)}
-        onConfirm={handleCorrectiveConfirm}
+      {/* DPA can also export PDF of submitted records */}
+      {!loading && submitted && isReadOnly && (
+        <button
+          onClick={() => setPdfOpen(true)}
+          className="mt-4 flex min-h-[52px] w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-4 text-base font-bold text-white shadow-lg shadow-blue-600/30 transition hover:bg-blue-500 active:scale-[0.98]"
+        >
+          <FileText className="h-5 w-5" /> Export Official Inspection PDF
+        </button>
+      )}
+
+      <DefectTicketModal
+        open={defectModalItem !== null}
+        itemName={defectModalItem?.question ?? ''}
+        checklistRef={checklist.title}
+        onClose={() => setDefectModalItem(null)}
+        onConfirm={handleDefectConfirm}
       />
       <AuditPdfPreview open={pdfOpen} onClose={() => setPdfOpen(false)} data={pdfData} />
+      <AuditTrailLog
+        open={auditLogOpen}
+        onClose={() => setAuditLogOpen(false)}
+        entries={relatedAuditEntries}
+        isLocked={submitted}
+        checklistTitle={checklist.title}
+      />
     </div>
   );
 }
