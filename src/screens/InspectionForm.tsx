@@ -172,9 +172,9 @@ export default function InspectionForm({ onBack }: Props) {
     assignedOfficer: string;
     targetDate: string;
     hasPhoto: boolean;
-    photoOriginalSize: string;
-    photoCompressedSize: string;
-    photoLabel: string;
+    photoOriginalSize: string | null;
+    photoCompressedSize: string | null;
+    photoLabel: string | null;
   }) => {
     if (!defectModalItem) return;
     const itemId = defectModalItem.itemId;

@@ -1,4 +1,12 @@
-import { X, FileText, QrCode, ShieldCheck } from 'lucide-react';
+import { X, FileText, QrCode, ShieldCheck, Lock, Camera, AlertTriangle } from 'lucide-react';
+
+type DefectInfo = {
+  defectId: string;
+  title: string;
+  severity: 'low' | 'medium' | 'critical';
+  assignedOfficer: string;
+  photoLabel: string | null;
+} | null;
 
 type Props = {
   open: boolean;
@@ -13,9 +21,11 @@ type Props = {
     officerRank: string;
     gps: string;
     timestamp: string;
-    items: { question: string; response: string }[];
+    items: { question: string; response: string; defect?: DefectInfo }[];
     signedBy: string;
     signedAt: string;
+    isLocked?: boolean;
+    defects?: DefectInfo[];
   };
 };
 
@@ -28,12 +38,19 @@ function formatDate(iso: string): string {
   }
 }
 
+const SEVERITY_LABEL: Record<string, string> = {
+  critical: 'CRITICAL',
+  medium: 'MEDIUM',
+  low: 'LOW',
+};
+
 export default function AuditPdfPreview({ open, onClose, data }: Props) {
   if (!open) return null;
 
   const passCount = data.items.filter((i) => i.response === 'pass').length;
   const failCount = data.items.filter((i) => i.response === 'fail').length;
   const naCount = data.items.filter((i) => i.response === 'na').length;
+  const defects = data.defects ?? data.items.map((i) => i.defect).filter(Boolean) as DefectInfo[];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -69,6 +86,16 @@ export default function AuditPdfPreview({ open, onClose, data }: Props) {
               </div>
             </div>
           </div>
+
+          {/* Locked badge */}
+          {data.isLocked && (
+            <div className="mt-3 flex items-center justify-center gap-2 border-2 border-emerald-700 bg-emerald-50 px-4 py-2">
+              <Lock className="h-5 w-5 text-emerald-700" />
+              <p className="text-sm font-bold uppercase tracking-wider text-emerald-800">
+                Record Locked — Cryptographically Sealed
+              </p>
+            </div>
+          )}
 
           {/* Checklist Title */}
           <div className="mt-4">
@@ -112,23 +139,64 @@ export default function AuditPdfPreview({ open, onClose, data }: Props) {
                   <th className="py-2 pr-4 text-left font-bold">#</th>
                   <th className="py-2 pr-4 text-left font-bold">Inspection Item</th>
                   <th className="py-2 text-center font-bold">Result</th>
+                  <th className="py-2 pl-4 text-left font-bold">Defect</th>
                 </tr>
               </thead>
               <tbody>
                 {data.items.map((item, i) => (
                   <tr key={i} className="border-b border-gray-300">
-                    <td className="py-2 pr-4">{i + 1}</td>
-                    <td className="py-2 pr-4">{item.question}</td>
-                    <td className="py-2 text-center">
+                    <td className="py-2 pr-4 align-top">{i + 1}</td>
+                    <td className="py-2 pr-4 align-top">{item.question}</td>
+                    <td className="py-2 text-center align-top">
                       <span className={`font-bold uppercase ${item.response === 'pass' ? 'text-green-700' : item.response === 'fail' ? 'text-red-700' : 'text-gray-500'}`}>
                         {item.response}
                       </span>
+                    </td>
+                    <td className="py-2 pl-4 align-top text-xs">
+                      {item.defect ? (
+                        <div>
+                          <p className="font-bold text-red-700">{item.defect.title}</p>
+                          <p className="text-gray-600">Severity: {SEVERITY_LABEL[item.defect.severity] ?? item.defect.severity}</p>
+                          <p className="text-gray-600">Assigned: {item.defect.assignedOfficer}</p>
+                          {item.defect.photoLabel && (
+                            <p className="flex items-center gap-1 text-gray-600">
+                              <Camera className="h-3 w-3" /> {item.defect.photoLabel}
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+
+          {/* Defect Attachments Summary */}
+          {defects.length > 0 && (
+            <div className="mt-6 border border-gray-400 p-4">
+              <div className="flex items-center gap-2 border-b border-gray-300 pb-2">
+                <AlertTriangle className="h-4 w-4 text-red-700" />
+                <h3 className="text-sm font-bold uppercase tracking-wide text-red-800">Defect Attachments ({defects.length})</h3>
+              </div>
+              <div className="mt-2 space-y-2">
+                {defects.map((d, i) => d && (
+                  <div key={i} className="flex items-start gap-3 border-b border-gray-200 pb-2 text-xs">
+                    <div className="flex h-12 w-12 shrink-0 items-center justify-center border border-gray-400 bg-gray-100">
+                      <Camera className="h-6 w-6 text-gray-500" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="font-bold">{d.title}</p>
+                      <p className="text-gray-600">Severity: {SEVERITY_LABEL[d.severity] ?? d.severity} · Assigned: {d.assignedOfficer}</p>
+                      {d.photoLabel && <p className="text-gray-600">Evidence: {d.photoLabel}</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Signature Area */}
           <div className="mt-8 grid grid-cols-2 gap-8">
@@ -140,6 +208,11 @@ export default function AuditPdfPreview({ open, onClose, data }: Props) {
                 Digital Signature — {data.officerRank} {data.watchOfficer}
               </p>
               <p className="mt-0.5 text-xs text-gray-500">Signed: {data.signedAt ? formatDate(data.signedAt) : formatDate(data.timestamp)}</p>
+              {data.isLocked && (
+                <p className="mt-1 flex items-center gap-1 text-xs font-bold text-emerald-700">
+                  <Lock className="h-3 w-3" /> Cryptographically Sealed
+                </p>
+              )}
             </div>
             <div className="flex flex-col items-center justify-end">
               <div className="flex h-24 w-24 items-center justify-center border-2 border-gray-400 bg-gray-50">
