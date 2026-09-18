@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
+import { supabase } from '@/lib/supabase';
 
 type NetworkStatus = 'online' | 'offline';
 
@@ -126,69 +127,6 @@ function randomGps(): string {
   return `${latDeg}°${String(latMin).padStart(2, '0')}'N ${lonDeg}°${String(lonMin).padStart(2, '0')}'E`;
 }
 
-const SEED_DEFECTS: Defect[] = [
-  {
-    id: 'seed-defect-1',
-    ship_id: 'seed-ship-nereus',
-    ship_name: 'C/V NEREUS',
-    inspection_id: null,
-    inspection_item_id: null,
-    title: 'Oily Water Separator valve failure',
-    severity: 'critical',
-    assigned_officer: '2nd Engineer',
-    target_resolution_date: new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10),
-    status: 'open',
-    photo_label: 'defect_3847.jpg',
-    photo_compressed_size: '180 KB',
-    photo_original_size: '4.2 MB',
-    created_by_role: 'junior_officer',
-    created_by_name: '3rd Eng. Nikos P.',
-    gps_coordinates: "55°12'N 12°45'E",
-    checklist_ref: 'Paris MOU Port State Control',
-    created_at: new Date(Date.now() - 3 * 3600000).toISOString(),
-  },
-  {
-    id: 'seed-defect-2',
-    ship_id: 'seed-ship-triton',
-    ship_name: 'M/V TRITON',
-    inspection_id: null,
-    inspection_item_id: null,
-    title: 'Emergency fire pump pressure below minimum',
-    severity: 'medium',
-    assigned_officer: 'Bosun',
-    target_resolution_date: new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10),
-    status: 'in_progress',
-    photo_label: 'defect_2913.jpg',
-    photo_compressed_size: '165 KB',
-    photo_original_size: '3.8 MB',
-    created_by_role: 'junior_officer',
-    created_by_name: '3rd Officer R. Jensen',
-    gps_coordinates: "58°15'N 10°30'E",
-    checklist_ref: 'USCG Foreign Vessel Pre-Arrival',
-    created_at: new Date(Date.now() - 8 * 3600000).toISOString(),
-  },
-  {
-    id: 'seed-defect-3',
-    ship_id: 'seed-ship-glory',
-    ship_name: 'M/V AEGEAN GLORY',
-    inspection_id: null,
-    inspection_item_id: null,
-    title: 'Garbage Record Book Part I missing entry',
-    severity: 'low',
-    assigned_officer: 'Chief Officer',
-    target_resolution_date: new Date(Date.now() + 1 * 86400000).toISOString().slice(0, 10),
-    status: 'open',
-    photo_label: null,
-    photo_compressed_size: null,
-    photo_original_size: null,
-    created_by_role: 'junior_officer',
-    created_by_name: '3rd Eng. Nikos P.',
-    gps_coordinates: "37°26'N 24°56'E",
-    checklist_ref: 'MARPOL Special Area Checklists',
-    created_at: new Date(Date.now() - 1 * 3600000).toISOString(),
-  },
-];
-
 export function AppProvider({ children }: { children: ReactNode }) {
   const [networkStatus, setNetworkStatus] = useState<NetworkStatus>('offline');
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
@@ -196,8 +134,65 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<number | null>(null);
   const [role, setRole] = useState<Role>('junior_officer');
-  const [defects, setDefects] = useState<Defect[]>(SEED_DEFECTS);
+  const [defects, setDefects] = useState<Defect[]>([]);
   const [auditLog, setAuditLog] = useState<AuditLogEntry[]>([]);
+
+  useEffect(() => {
+    (async () => {
+      const { data: dbDefects } = await supabase
+        .from('defects')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (dbDefects) {
+        const { data: ships } = await supabase.from('ships').select('id,name');
+        const shipMap = new Map((ships ?? []).map((s: { id: string; name: string }) => [s.id, s.name]));
+        setDefects(
+          dbDefects.map((d: Record<string, unknown>) => ({
+            id: d.id as string,
+            ship_id: d.ship_id as string,
+            ship_name: shipMap.get(d.ship_id as string) ?? 'Unknown Vessel',
+            inspection_id: d.inspection_id as string | null,
+            inspection_item_id: d.inspection_item_id as string | null,
+            title: d.title as string,
+            severity: d.severity as 'low' | 'medium' | 'critical',
+            assigned_officer: d.assigned_officer as string,
+            target_resolution_date: d.target_resolution_date as string,
+            status: d.status as 'open' | 'in_progress' | 'resolved',
+            photo_label: (d.photo_label as string) ?? null,
+            photo_compressed_size: (d.photo_compressed_size as string) ?? null,
+            photo_original_size: (d.photo_original_size as string) ?? null,
+            created_by_role: d.created_by_role as Role,
+            created_by_name: d.created_by_name as string,
+            gps_coordinates: (d.gps_coordinates as string) ?? '',
+            checklist_ref: (d.checklist_ref as string) ?? null,
+            created_at: d.created_at as string,
+          })),
+        );
+      }
+
+      const { data: dbAudit } = await supabase
+        .from('audit_log_entries')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (dbAudit) {
+        setAuditLog(
+          dbAudit.map((e: Record<string, unknown>) => ({
+            id: e.id as string,
+            inspection_id: (e.inspection_id as string) ?? null,
+            ship_id: (e.ship_id as string) ?? null,
+            action: e.action as string,
+            action_type: e.action_type as string,
+            user_name: e.user_name as string,
+            user_role: e.user_role as Role,
+            gps_coordinates: (e.gps_coordinates as string) ?? '',
+            item_key: (e.item_key as string) ?? null,
+            item_question: (e.item_question as string) ?? null,
+            created_at: e.created_at as string,
+          })),
+        );
+      }
+    })();
+  }, []);
 
   const incrementPendingSync = useCallback(() => {
     setPendingSyncCount((c) => c + 1);
@@ -216,26 +211,64 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addDefect = useCallback((d: Omit<Defect, 'id' | 'created_at'>): Defect => {
-    const newDefect: Defect = {
-      ...d,
-      id: `defect-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      created_at: new Date().toISOString(),
-    };
+    const tempId = `defect-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date().toISOString();
+    const newDefect: Defect = { ...d, id: tempId, created_at: now };
     setDefects((prev) => [newDefect, ...prev]);
+
+    (async () => {
+      await supabase.from('defects').insert({
+        ship_id: d.ship_id || null,
+        inspection_id: d.inspection_id,
+        inspection_item_id: d.inspection_item_id,
+        title: d.title,
+        severity: d.severity,
+        assigned_officer: d.assigned_officer,
+        target_resolution_date: d.target_resolution_date,
+        status: d.status,
+        photo_label: d.photo_label,
+        photo_compressed_size: d.photo_compressed_size,
+        photo_original_size: d.photo_original_size,
+        created_by_role: d.created_by_role,
+        created_by_name: d.created_by_name,
+        gps_coordinates: d.gps_coordinates,
+        checklist_ref: d.checklist_ref,
+      });
+    })();
+
     return newDefect;
   }, []);
 
   const updateDefect = useCallback((id: string, updates: Partial<Defect>) => {
     setDefects((prev) => prev.map((d) => (d.id === id ? { ...d, ...updates } : d)));
+
+    (async () => {
+      const dbUpdates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+      if (updates.status) dbUpdates.status = updates.status;
+      if (updates.assigned_officer) dbUpdates.assigned_officer = updates.assigned_officer;
+      if (updates.target_resolution_date) dbUpdates.target_resolution_date = updates.target_resolution_date;
+      await supabase.from('defects').update(dbUpdates).eq('id', id);
+    })();
   }, []);
 
   const addAuditEntry = useCallback((e: Omit<AuditLogEntry, 'id' | 'created_at'>) => {
-    const entry: AuditLogEntry = {
-      ...e,
-      id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      created_at: new Date().toISOString(),
-    };
+    const tempId = `audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const entry: AuditLogEntry = { ...e, id: tempId, created_at: new Date().toISOString() };
     setAuditLog((prev) => [entry, ...prev]);
+
+    (async () => {
+      await supabase.from('audit_log_entries').insert({
+        inspection_id: e.inspection_id,
+        ship_id: e.ship_id,
+        action: e.action,
+        action_type: e.action_type,
+        user_name: e.user_name,
+        user_role: e.user_role,
+        gps_coordinates: e.gps_coordinates,
+        item_key: e.item_key,
+        item_question: e.item_question,
+      });
+    })();
   }, []);
 
   return (
