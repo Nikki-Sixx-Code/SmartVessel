@@ -37,7 +37,6 @@ type Screen = 'ship' | 'inspection' | 'fleet' | 'compliance' | 'intel' | 'fleetm
 
 const OFFICER_NAV: { id: Screen; label: string; icon: React.ReactNode }[] = [
   { id: 'ship', label: 'Vessel Dashboard', icon: <ShipIcon className="h-5 w-5" /> },
-  { id: 'fleetmgmt', label: 'Fleet Management', icon: <Layers className="h-5 w-5" /> },
   { id: 'compliance', label: 'Compliance Checklists', icon: <FileCheck2 className="h-5 w-5" /> },
   { id: 'inspection', label: 'Engine Room Inspection', icon: <ClipboardCheck className="h-5 w-5" /> },
   { id: 'defects', label: 'Defects Tracker', icon: <ShieldAlert className="h-5 w-5" /> },
@@ -109,7 +108,7 @@ function RoleSwitcher() {
                     <p className={`text-sm font-bold ${active ? 'text-blue-300' : 'text-white'}`}>{cfg.label}</p>
                     <p className="text-xs text-slate-400">{cfg.userName}</p>
                     <p className="mt-0.5 text-[10px] text-slate-500">
-                      {cfg.canSign ? 'Can sign & lock' : cfg.canViewFleetAnalytics ? 'Read-only · Fleet analytics' : 'Draft/Pending review only'}
+                      {cfg.canManageFleet ? 'Fleet-wide management · analytics' : cfg.canSign ? 'Master sign-off · lock authority' : 'Draft/Pending review only'}
                     </p>
                   </div>
                   {active && <User className="mt-0.5 h-4 w-4 shrink-0 text-blue-400" />}
@@ -132,10 +131,11 @@ function AppContent() {
   const roleCfg = ROLES[role];
   const isDPA = role === 'dpa';
 
-  // Auto-switch to DPA dashboard when switching to DPA role
+  // Fleet-wide screens are DPA-only; auto-redirect vessel roles away from them
   useEffect(() => {
+    const fleetOnlyScreens: Screen[] = ['dpa', 'fleet', 'fleetmgmt'];
     if (isDPA && screen === 'ship') setScreen('dpa');
-    if (!isDPA && screen === 'dpa') setScreen('ship');
+    if (!isDPA && fleetOnlyScreens.includes(screen)) setScreen('ship');
   }, [isDPA, screen]);
 
   const handleSignalRestore = useCallback(() => {

@@ -10,12 +10,14 @@ export type RoleConfig = {
   label: string;
   shortLabel: string;
   userName: string;
+  rank: string;
   canSign: boolean;
   canLock: boolean;
   canCloseAudit: boolean;
   canPushTemplates: boolean;
   canViewFleetAnalytics: boolean;
   canViewDefectTracker: boolean;
+  canManageFleet: boolean;
   viewMode: 'tablet' | 'office';
 };
 
@@ -25,12 +27,14 @@ export const ROLES: Record<Role, RoleConfig> = {
     label: 'Junior Officer (Deck/Engine)',
     shortLabel: 'Junior Officer',
     userName: '3rd Eng. Nikos P.',
+    rank: '3rd Engineer',
     canSign: false,
     canLock: false,
     canCloseAudit: false,
     canPushTemplates: false,
     canViewFleetAnalytics: false,
     canViewDefectTracker: true,
+    canManageFleet: false,
     viewMode: 'tablet',
   },
   captain: {
@@ -38,12 +42,14 @@ export const ROLES: Record<Role, RoleConfig> = {
     label: 'Captain / Chief Engineer',
     shortLabel: 'Captain / C/E',
     userName: 'Master Capt. Elias K.',
+    rank: 'Master',
     canSign: true,
     canLock: true,
     canCloseAudit: true,
     canPushTemplates: false,
     canViewFleetAnalytics: false,
     canViewDefectTracker: true,
+    canManageFleet: false,
     viewMode: 'tablet',
   },
   dpa: {
@@ -51,12 +57,14 @@ export const ROLES: Record<Role, RoleConfig> = {
     label: 'DPA / Fleet Manager (Office)',
     shortLabel: 'DPA / Fleet Mgr',
     userName: 'DPA S. Andersson',
+    rank: 'DPA',
     canSign: false,
     canLock: false,
     canCloseAudit: false,
     canPushTemplates: true,
     canViewFleetAnalytics: true,
     canViewDefectTracker: true,
+    canManageFleet: true,
     viewMode: 'office',
   },
 };

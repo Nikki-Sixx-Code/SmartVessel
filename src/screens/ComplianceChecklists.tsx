@@ -23,7 +23,7 @@ import { useApp, ROLES, generateGps } from '@/lib/appState';
 import DefectTicketModal from '@/components/DefectTicketModal';
 import AuditPdfPreview from '@/components/AuditPdfPreview';
 import AuditTrailLog from '@/components/AuditTrailLog';
-import SignaturePad from '@/components/SignaturePad';
+import SignatureModal from '@/components/SignatureModal';
 
 type Response = 'pass' | 'fail' | 'na';
 
@@ -76,6 +76,7 @@ export default function ComplianceChecklists() {
   const [defectModalItem, setDefectModalItem] = useState<{ itemId: string; question: string } | null>(null);
   const [pdfOpen, setPdfOpen] = useState(false);
   const [auditLogOpen, setAuditLogOpen] = useState(false);
+  const [sigModalOpen, setSigModalOpen] = useState(false);
 
   const loadChecklist = useCallback(async (cl: OfficialChecklist) => {
     setLoading(true);
@@ -260,8 +261,10 @@ export default function ComplianceChecklists() {
   };
 
   const sign = async () => {
-    if (submitted || !hasSignature || !inspection || !canSign) return;
+    if (submitted || !inspection || !canSign) return;
+    setHasSignature(true);
     setSigned(true);
+    setSigModalOpen(false);
     await supabase
       .from('inspections')
       .update({ signature_confirmed: true, signed_by: roleCfg.userName })
@@ -343,11 +346,33 @@ export default function ComplianceChecklists() {
         </div>
       )}
 
-      {/* Junior Officer restriction banner */}
+      {/* Captain / Chief Engineer authority banner */}
+      {role === 'captain' && !submitted && (
+        <div className="mb-4 flex items-start gap-3 rounded-xl border-2 border-emerald-500/50 bg-emerald-500/10 px-4 py-3.5 shadow-lg shadow-emerald-500/10">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500/20 ring-1 ring-emerald-500/40">
+            <ShieldCheck className="h-5 w-5 text-emerald-400" />
+          </div>
+          <div>
+            <p className="text-sm font-bold text-emerald-300">Master / Chief Engineer Authority — Final Sign-Off</p>
+            <p className="mt-0.5 text-xs text-emerald-200/80">
+              You can perform the final master/chief sign-off and lock completed sections. Once submitted, the record is cryptographically sealed and cannot be edited.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Junior Officer input-only banner */}
       {role === 'junior_officer' && !submitted && (
-        <div className="mb-4 flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
-          <ShieldAlert className="h-5 w-5 text-amber-400" />
-          <p className="text-sm font-bold text-amber-300">Junior Officer mode — You can fill checklists and create defect tickets. Signing and locking requires Captain / Chief Engineer.</p>
+        <div className="mb-4 flex items-start gap-3 rounded-xl border-2 border-amber-500/40 bg-amber-500/10 px-4 py-3.5">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-500/20 ring-1 ring-amber-500/30">
+            <ShieldAlert className="h-5 w-5 text-amber-400" />
+          </div>
+          <div>
+            <p className="text-sm font-bold text-amber-300">Junior Officer — Input Only, Pending Senior Approval</p>
+            <p className="mt-0.5 text-xs text-amber-200/80">
+              You can fill checklists and create defect tickets, but signing and locking requires the Captain or Chief Engineer. Your entries are saved as a draft pending review.
+            </p>
+          </div>
         </div>
       )}
 
@@ -519,21 +544,33 @@ export default function ComplianceChecklists() {
                 Signing requires Captain / C/E
               </span>
             )}
+            {signed && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-400 ring-1 ring-emerald-500/30">
+                <Lock className="h-3 w-3" /> Signed &amp; Locked
+              </span>
+            )}
           </div>
-          <SignaturePad
-            disabled={submitted || signed || !canSign}
-            saved={signed}
-            onSave={setHasSignature}
-          />
-          {!signed && canSign && (
+
+          {signed ? (
+            <div className="flex items-center gap-3 rounded-xl border-2 border-emerald-500/40 bg-emerald-500/10 px-4 py-5">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-500/20 ring-1 ring-emerald-500/40">
+                <Check className="h-6 w-6 text-emerald-400" />
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-bold text-emerald-300">Signed by {roleCfg.userName}</p>
+                <p className="text-xs text-emerald-200/70">Master / Chief Engineer sign-off confirmed. Record is ready to lock.</p>
+              </div>
+            </div>
+          ) : (
             <button
-              onClick={sign}
-              disabled={submitted || signed || !hasSignature}
-              className={`mt-3 flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed px-5 py-3 text-sm font-bold transition disabled:cursor-not-allowed ${
-                signed ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300' : 'border-slate-600 bg-slate-950/40 text-slate-300 hover:border-slate-500'
+              onClick={() => setSigModalOpen(true)}
+              disabled={submitted || signed || !canSign}
+              className={`flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-6 text-sm font-semibold transition disabled:cursor-not-allowed ${
+                canSign ? 'border-blue-500/50 bg-blue-500/5 text-blue-300 hover:border-blue-400 hover:bg-blue-500/10' : 'border-slate-600 bg-slate-950/40 text-slate-400'
               }`}
             >
-              {signed ? <><Check className="h-5 w-5" /> Signed</> : <><PenLine className="h-5 w-5" /> Confirm Signature</>}
+              <PenLine className="h-5 w-5" />
+              {canSign ? `Open Signature Pad — ${roleCfg.userName}` : 'Signing requires Captain / Chief Engineer'}
             </button>
           )}
 
@@ -600,6 +637,13 @@ export default function ComplianceChecklists() {
         entries={relatedAuditEntries}
         isLocked={submitted}
         checklistTitle={checklist.title}
+      />
+      <SignatureModal
+        open={sigModalOpen}
+        roleCfg={roleCfg}
+        checklistTitle={checklist.title}
+        onConfirm={sign}
+        onCancel={() => setSigModalOpen(false)}
       />
     </div>
   );
