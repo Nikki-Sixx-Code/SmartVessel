@@ -149,6 +149,12 @@ function AppContent() {
     }, 2000);
   }, [pendingSyncCount, isSyncing, setNetworkStatus, setSyncing, clearPendingSync, setLastSyncTime]);
 
+  useEffect(() => {
+    const root = document.documentElement;
+    if (nightMode) root.classList.add('night');
+    else root.classList.remove('night');
+  }, [nightMode]);
+
   const navigate = (s: Screen) => {
     setScreen(s);
     setDrawerOpen(false);
@@ -156,14 +162,13 @@ function AppContent() {
 
   const NAV = isDPA ? DPA_NAV : OFFICER_NAV;
 
-  const night = nightMode;
-  const rootBg = night ? 'bg-black text-red-200' : 'bg-slate-950 text-slate-100';
-  const sidebarBg = night ? 'bg-black border-red-900/50' : 'bg-slate-950 border-slate-800';
-  const headerBg = night ? 'bg-black/95 border-red-900/40' : 'bg-slate-950/95 border-slate-800';
-  const navItemBase = night ? 'text-red-300 hover:bg-red-950/50' : 'text-slate-400 hover:bg-slate-800';
-  const navItemActive = night ? 'bg-red-800 text-white' : 'bg-blue-600 text-white';
-  const brandColor = night ? 'text-red-400' : 'text-blue-400';
-  const drawerOverlay = night ? 'bg-black/80' : 'bg-black/70';
+  const rootBg = 'bg-slate-950 text-slate-100';
+  const sidebarBg = 'bg-slate-950 border-slate-800';
+  const headerBg = 'bg-slate-950/95 border-slate-800';
+  const navItemBase = 'text-slate-400 hover:bg-slate-800';
+  const navItemActive = 'bg-blue-600 text-white';
+  const brandColor = 'text-blue-400';
+  const drawerOverlay = 'bg-black/70';
 
   const syncBadge = isSyncing
     ? { bg: 'bg-blue-500/15', text: 'text-blue-300', ring: 'ring-blue-500/30', dot: 'bg-blue-400', label: 'Syncing…' }
@@ -225,12 +230,10 @@ function AppContent() {
 
           <button
             onClick={toggleNightMode}
-            className={`ml-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border-2 transition active:scale-95 ${
-              night ? 'border-red-500 bg-red-900/40 text-red-300' : 'border-slate-600 bg-slate-800 text-slate-300 hover:bg-slate-700'
-            }`}
-            title={night ? 'Night Mode (Red Light) — Tap to disable' : 'Enable Night Mode (Red Light) for bridge watchkeeping'}
+            className="ml-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border-2 border-red-500 bg-red-900/40 text-red-300 transition active:scale-95 hover:bg-red-900/60"
+            title={nightMode ? 'Night Mode (Red Light) — Tap for Day Mode' : 'Enable Bridge Night Mode (Red Light) for night watchkeeping'}
           >
-            {night ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
+            {nightMode ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
           </button>
         </div>
       </header>

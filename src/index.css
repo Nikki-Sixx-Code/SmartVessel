@@ -2,6 +2,151 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Smooth theme transition when toggling day/night */
+*, *::before, *::after {
+  transition-property: background-color, border-color, color, fill, stroke;
+  transition-duration: 300ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* =========================================================
+   Day Mode defaults (no class needed) — standard dark-blue/slate
+   ========================================================= */
+:root {
+  --c-slate-50: 248 250 252;
+  --c-slate-100: 241 245 249;
+  --c-slate-200: 226 232 240;
+  --c-slate-300: 203 213 225;
+  --c-slate-400: 148 163 184;
+  --c-slate-500: 100 116 139;
+  --c-slate-600: 71 85 105;
+  --c-slate-700: 51 65 85;
+  --c-slate-800: 30 41 59;
+  --c-slate-900: 15 23 42;
+  --c-slate-950: 2 6 23;
+
+  --c-blue-200: 191 219 254;
+  --c-blue-300: 147 197 253;
+  --c-blue-400: 96 165 250;
+  --c-blue-500: 59 130 246;
+  --c-blue-600: 37 99 235;
+  --c-blue-900: 30 58 138;
+
+  --c-emerald-50: 236 253 245;
+  --c-emerald-200: 167 243 208;
+  --c-emerald-300: 110 231 183;
+  --c-emerald-400: 52 211 153;
+  --c-emerald-500: 16 185 129;
+  --c-emerald-600: 5 150 105;
+  --c-emerald-700: 4 120 87;
+  --c-emerald-800: 6 95 70;
+
+  --c-amber-200: 253 230 138;
+  --c-amber-300: 252 211 77;
+  --c-amber-400: 251 191 36;
+  --c-amber-500: 245 158 11;
+  --c-amber-600: 217 119 6;
+
+  --c-red-200: 254 202 202;
+  --c-red-300: 252 165 165;
+  --c-red-400: 248 113 113;
+  --c-red-500: 239 68 68;
+  --c-red-600: 220 38 38;
+  --c-red-700: 185 28 28;
+  --c-red-800: 153 27 27;
+  --c-red-900: 127 29 29;
+  --c-red-950: 69 10 10;
+
+  --c-cyan-200: 165 243 252;
+  --c-cyan-300: 103 232 249;
+  --c-cyan-400: 34 211 238;
+  --c-cyan-500: 6 182 212;
+  --c-cyan-600: 8 145 178;
+}
+
+/* =========================================================
+   Bridge Night Mode — Red/Dark maritime night-vision theme
+   Activated when <html class="night"> is set by the app.
+   All colors are remapped via CSS variables so every component
+   that uses Tailwind's slate/blue/emerald/amber/red/cyan ramps
+   recolors instantly without per-component changes.
+   ========================================================= */
+html.night {
+  /* Backgrounds: deep dark-red/black */
+  --c-slate-50: 240 160 160;
+  --c-slate-100: 224 128 128;
+  --c-slate-200: 201 90 90;
+  --c-slate-300: 168 64 64;
+  --c-slate-400: 122 40 40;
+  --c-slate-500: 90 24 24;
+  --c-slate-600: 56 14 14;
+  --c-slate-700: 38 9 9;
+  --c-slate-800: 26 6 6;
+  --c-slate-900: 18 4 4;
+  --c-slate-950: 10 2 2;
+
+  /* Blue → dark amber/red so interactive highlights stay visible
+     but don't emit bright blue light */
+  --c-blue-200: 232 138 78;
+  --c-blue-300: 208 104 50;
+  --c-blue-400: 184 80 32;
+  --c-blue-500: 139 58 20;
+  --c-blue-600: 107 45 16;
+  --c-blue-900: 58 26 10;
+
+  /* Emerald (pass/success) → dim amber-green to retain meaning
+     without green blast */
+  --c-emerald-50: 80 50 20;
+  --c-emerald-200: 208 154 90;
+  --c-emerald-300: 176 120 64;
+  --c-emerald-400: 138 88 40;
+  --c-emerald-500: 106 66 24;
+  --c-emerald-600: 77 48 16;
+  --c-emerald-700: 58 37 8;
+  --c-emerald-800: 42 26 5;
+
+  /* Amber (warnings) → low-intensity amber */
+  --c-amber-200: 217 166 88;
+  --c-amber-300: 192 138 56;
+  --c-amber-400: 154 104 32;
+  --c-amber-500: 122 79 16;
+  --c-amber-600: 90 58 10;
+
+  /* Red (critical/fail) → dim dark red */
+  --c-red-200: 224 136 136;
+  --c-red-300: 201 96 96;
+  --c-red-400: 168 64 64;
+  --c-red-500: 136 40 40;
+  --c-red-600: 106 26 24;
+  --c-red-700: 78 16 16;
+  --c-red-800: 58 10 10;
+  --c-red-900: 42 6 6;
+  --c-red-950: 26 3 3;
+
+  /* Cyan (info) → dim amber */
+  --c-cyan-200: 217 166 88;
+  --c-cyan-300: 192 138 56;
+  --c-cyan-400: 154 104 32;
+  --c-cyan-500: 122 79 16;
+  --c-cyan-600: 90 58 10;
+}
+
+html.night body {
+  background-color: rgb(10 2 2);
+}
+
+/* Override white → dim red-amber in night mode so bright text
+   doesn't blast the officer's night vision */
+html.night .text-white {
+  color: rgb(201 90 90) !important;
+}
+html.night .hover\:text-white:hover {
+  color: rgb(201 90 90) !important;
+}
+html.night .bg-white {
+  background-color: rgb(18 4 4) !important;
+}
+
 @media print {
   body * {
     visibility: hidden;
